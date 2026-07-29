@@ -1,0 +1,42 @@
+{
+  "title": "Ebara Hydrostation",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ebara Hydrostation",
+        "description": "Searching for Ebara Hydrostation gateways on the network..."
+      },
+      "gateway": {
+        "title": "Select Gateway",
+        "description": "Choose the ESP32 gateway to use:",
+        "data": {
+          "gateway": "ESP32 Gateway"
+        }
+      },
+      "manual_gateway": {
+        "title": "Gateway Address",
+        "description": "Enter the ESP32 gateway IP address manually.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port (default 6053)"
+        }
+      },
+      "select_hydro": {
+        "title": "Select Hydrostation",
+        "description": "Choose the Hydrostation to add:",
+        "data": {
+          "hydro_mac": "Hydrostation"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to gateway. Check that the ESP32 is online and the API is accessible.",
+      "no_devices_found": "No Hydrostations discovered. Make sure the device is powered on and within BLE range of the gateway.",
+      "no_gateway_found": "No gateway found. Flash the ESP32 with the Ebara gateway firmware first."
+    },
+    "abort": {
+      "already_configured": "This Hydrostation is already configured.",
+      "no_gateway": "No compatible gateway found on the network."
+    }
+  }
+}

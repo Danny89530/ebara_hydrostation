@@ -1,0 +1,68 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ebara Hydrostation",
+        "description": "Ricerca gateway Ebara Hydrostation sulla rete in corso..."
+      },
+      "gateway": {
+        "title": "Seleziona Gateway",
+        "description": "Scegli il gateway ESP32 da utilizzare:",
+        "data": {
+          "gateway": "Gateway ESP32"
+        }
+      },
+      "manual_gateway": {
+        "title": "Indirizzo Gateway",
+        "description": "Inserisci manualmente l'indirizzo IP del gateway ESP32.",
+        "data": {
+          "host": "Host / Indirizzo IP",
+          "port": "Porta (default 6053)"
+        }
+      },
+      "select_hydro": {
+        "title": "Seleziona Hydrostation",
+        "description": "Scegli l'Hydrostation da aggiungere:",
+        "data": {
+          "hydro_mac": "Hydrostation"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossibile connettersi al dispositivo. Verifica che sia acceso e nel raggio d'azione.",
+      "invalid_address": "Indirizzo MAC Bluetooth non valido. Usa il formato AA:BB:CC:DD:EE:FF.",
+      "unknown": "Errore imprevisto."
+    },
+    "abort": {
+      "already_configured": "Questo dispositivo è già configurato.",
+      "no_devices_found": "Nessuna Hydrostation trovata via Bluetooth."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "act_pressure": { "name": "Pressione attuale" },
+      "target_pressure": { "name": "Pressione di lavoro" },
+      "start_pressure": { "name": "Pressione di avvio" },
+      "delta_pressure": { "name": "Delta pressione" },
+      "current": { "name": "Corrente motore" },
+      "freq_motor": { "name": "Frequenza motore" },
+      "water_percent": { "name": "Livello acqua" },
+      "work_hours": { "name": "Ore di lavoro" },
+      "error_codes": { "name": "Errori attivi" },
+      "fw_version": { "name": "Versione firmware" },
+      "hw_version": { "name": "Versione hardware" }
+    },
+    "binary_sensor": {
+      "motor_run": { "name": "Motore in marcia" },
+      "motor_enabled": { "name": "Motore abilitato" },
+      "motor_error": { "name": "Errore motore" }
+    },
+    "switch": {
+      "motor": { "name": "Motore" }
+    },
+    "number": {
+      "target_pressure": { "name": "Pressione di lavoro" },
+      "delta_pressure": { "name": "Delta pressione" }
+    }
+  }
+}
