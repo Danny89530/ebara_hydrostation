@@ -29,6 +29,10 @@ _LOGGER = logging.getLogger(__name__)
 
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
+# Entities this component always creates on the ESP32 gateway, used to
+# recognize a gateway regardless of what the user named the device itself.
+_GATEWAY_SIGNATURE_ENTITY_NAMES = {"Target MAC", "GW Status"}
+
 
 class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Ebara Hydrostation."""
@@ -103,6 +107,18 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._gateway_host = user_input["host"]
             self._gateway_port = int(user_input.get("port", 6053))
+            # Resolve the matching native ESPHome config entry by host, so
+            # the entity-registry-based discovery/fallback lookups in
+            # async_step_select_hydro() still work — without this,
+            # _gateway_entry_id stayed None on this path (it's normally set
+            # by async_step_gateway()), so those lookups matched nothing and
+            # setup always failed with "no devices found" whenever the
+            # gateway wasn't auto-detected and had to be entered manually.
+            for entry in self.hass.config_entries.async_entries("esphome"):
+                if entry.data.get("host") == self._gateway_host:
+                    self._gateway_entry_id = entry.entry_id
+                    self._gateway_noise_psk = entry.data.get("noise_psk")
+                    break
             return await self.async_step_select_hydro()
         schema = vol.Schema(
             {
@@ -167,24 +183,50 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def _find_esphome_gateways(self) -> dict[str, dict]:
+        """Find ESPHome config entries that look like an Ebara Hydrostation
+        gateway.
+
+        Matches by looking for this component's own signature entities
+        ("Target MAC" and "GW Status") rather than the device's own display
+        name — that name is fully user-customizable (e.g. renamed to
+        reflect where the gateway is physically installed), so filtering by
+        a fixed "ebara-hydro" name prefix silently found nothing for any
+        renamed device.
+        """
+        from homeassistant.helpers import entity_registry as er
+
+        ent_reg = er.async_get(self.hass)
+        entry_signature_names: dict[str, set[str]] = {}
+        for entity in ent_reg.entities.values():
+            if entity.platform != "esphome":
+                continue
+            if entity.original_name in _GATEWAY_SIGNATURE_ENTITY_NAMES:
+                entry_signature_names.setdefault(entity.config_entry_id, set()).add(
+                    entity.original_name
+                )
+
         gateways: dict[str, dict] = {}
         for entry in self.hass.config_entries.async_entries("esphome"):
-            device_name = (
+            if not _GATEWAY_SIGNATURE_ENTITY_NAMES.issubset(
+                entry_signature_names.get(entry.entry_id, set())
+            ):
+                continue
+            host = entry.data.get("host", "")
+            port = entry.data.get("port", 6053)
+            noise_psk = entry.data.get("noise_psk")
+            if not host:
+                continue
+            label = (
                 entry.data.get("device_name")
                 or entry.data.get("name")
                 or entry.title
-                or ""
+                or host
             )
-            if device_name.startswith("ebara-hydro"):
-                host = entry.data.get("host", "")
-                port = entry.data.get("port", 6053)
-                noise_psk = entry.data.get("noise_psk")
-                if host:
-                    gateways[f"{host}:{port}"] = {
-                        "label": device_name,
-                        "noise_psk": noise_psk,
-                        "entry_id": entry.entry_id,
-                    }
+            gateways[f"{host}:{port}"] = {
+                "label": label,
+                "noise_psk": noise_psk,
+                "entry_id": entry.entry_id,
+            }
         return gateways
 
     async def _read_discovered_hydros(self) -> dict[str, str]:
