@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -25,6 +26,8 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
 
 class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -190,45 +193,51 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
 
         result: dict[str, str] = {}
 
-        # Find the entity_id for "Discovered Hydrostations" from our gateway entry
+        # Find the "Discovered Hydrostations" and "Target MAC" entities from
+        # our gateway entry.
         ent_reg = er.async_get(self.hass)
         discovered_entity_id: str | None = None
+        target_mac_entity_id: str | None = None
 
         for entity in ent_reg.entities.values():
-            if (
-                entity.config_entry_id == self._gateway_entry_id
-                and "discovered" in (entity.entity_id or "").lower()
-            ):
+            if entity.config_entry_id != self._gateway_entry_id:
+                continue
+            entity_id_lower = (entity.entity_id or "").lower()
+            if discovered_entity_id is None and "discovered" in entity_id_lower:
                 discovered_entity_id = entity.entity_id
-                break
+            if target_mac_entity_id is None and "target_mac" in entity_id_lower:
+                target_mac_entity_id = entity.entity_id
 
-        if not discovered_entity_id:
+        if discovered_entity_id:
+            state = self.hass.states.get(discovered_entity_id)
+            if state and state.state and state.state not in ("unavailable", "unknown"):
+                try:
+                    devices = json.loads(state.state)
+                    for d in devices:
+                        mac = d.get("mac", "")
+                        name = d.get("name", mac)
+                        rssi = d.get("rssi", 0)
+                        if mac:
+                            result[mac] = f"{name} ({mac}, {rssi} dBm)"
+                except (json.JSONDecodeError, KeyError) as err:
+                    _LOGGER.error("JSON parse error reading discovered hydros: %s", err)
+        else:
             _LOGGER.warning(
                 "Could not find 'Discovered Hydrostations' entity for gateway entry %s",
                 self._gateway_entry_id,
             )
-            return {}
 
-        state = self.hass.states.get(discovered_entity_id)
-        if not state or not state.state or state.state in ("unavailable", "unknown", ""):
-            _LOGGER.warning(
-                "Entity %s has no valid state: %s",
-                discovered_entity_id,
-                state.state if state else "missing",
-            )
-            return {}
-
-        try:
-            devices = json.loads(state.state)
-            for d in devices:
-                mac = d.get("mac", "")
-                name = d.get("name", mac)
-                rssi = d.get("rssi", 0)
-                if mac:
-                    result[mac] = f"{name} ({mac}, {rssi} dBm)"
-        except (json.JSONDecodeError, KeyError) as err:
-            _LOGGER.error("JSON parse error reading discovered hydros: %s", err)
-            raise
+        # Fallback: a gateway that's already bonded to a pump stops scanning
+        # entirely (see the ESP component's start_scan_()), so a fresh config
+        # flow attempt would otherwise never find anything and association
+        # would be impossible. Offer the currently configured Target MAC too,
+        # so re-associating an already-paired gateway stays possible.
+        if target_mac_entity_id:
+            state = self.hass.states.get(target_mac_entity_id)
+            if state and state.state and _MAC_RE.match(state.state):
+                mac = state.state
+                if mac not in result:
+                    result[mac] = f"Hydrostation ({mac})"
 
         return result
 

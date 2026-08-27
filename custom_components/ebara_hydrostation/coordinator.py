@@ -59,6 +59,8 @@ class EbaraCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_start(self) -> None:
         """Connect to the ESP32 gateway (called from async_setup_entry)."""
         await self._connect()
+        if not self._connected:
+            self._schedule_reconnect()
 
     async def async_stop(self) -> None:
         """Disconnect and cancel any reconnect task."""
@@ -152,7 +154,10 @@ class EbaraCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             _LOGGER.error("Failed to connect to ESP32 gateway %s: %s", self.host, err)
             self._connected = False
-            self._schedule_reconnect()
+            # Retry scheduling is the caller's responsibility (async_start()
+            # or _reconnect_loop() below) — this method must stay free of
+            # scheduling side effects, since it's also invoked from inside
+            # the reconnect loop's own task on every retry.
 
     async def _disconnect(self) -> None:
         """Cleanly disconnect from the ESP32."""
@@ -183,16 +188,26 @@ class EbaraCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._schedule_reconnect()
 
     def _schedule_reconnect(self) -> None:
-        """Schedule a reconnection attempt after a delay."""
+        """Ensure a reconnect-retry loop is running."""
         if self._reconnect_task and not self._reconnect_task.done():
             return
+        self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
-        async def _reconnect() -> None:
+    async def _reconnect_loop(self) -> None:
+        """Retry the connection every RECONNECT_DELAY seconds, in a single
+        long-lived task, until it succeeds or the coordinator is shut down.
+
+        A chain of self-rescheduling one-shot tasks doesn't work here: a
+        failed retry runs *inside* this same task, so a done-check guard
+        in _schedule_reconnect() would see itself as still running and
+        silently skip scheduling any further attempt — permanently ending
+        the retry loop after exactly one failure.
+        """
+        while not self._shutting_down and not self._connected:
             await asyncio.sleep(RECONNECT_DELAY)
-            if not self._connected:
-                await self._connect()
-
-        self._reconnect_task = asyncio.create_task(_reconnect())
+            if self._shutting_down or self._connected:
+                return
+            await self._connect()
 
     # ── State handling ────────────────────────────────────────────────────────
 
