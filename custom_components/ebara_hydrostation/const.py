@@ -43,7 +43,6 @@ ESP_ENTITY_SET_START_PRESS   = "Start Pressure Setpoint"
 ESP_ENTITY_SET_DELTA_PRESS   = "Delta Pressure Setpoint"
 ESP_ENTITY_POLL_INTERVAL     = "Update Interval"
 ESP_ENTITY_SERIAL_NUMBER     = "Serial Number"
-ESP_ENTITY_LOT_NUMBER        = "Lot Number"
 
 # Coherent bounds for the poll interval (seconds) — must match
 # kUpdateIntervalMinS/kUpdateIntervalMaxS in ebara_hydrostation.cpp.

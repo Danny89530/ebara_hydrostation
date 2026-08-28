@@ -38,7 +38,6 @@ from .const import (
     ESP_ENTITY_ERROR_TEXT,
     ESP_ENTITY_GW_STATUS,
     ESP_ENTITY_SERIAL_NUMBER,
-    ESP_ENTITY_LOT_NUMBER,
 )
 from .coordinator import EbaraCoordinator
 
@@ -220,16 +219,6 @@ SENSOR_DESCRIPTIONS: tuple[EbaraSensorDescription, ...] = (
         state_class=None,
         is_numeric=False,
         icon="mdi:barcode",
-    ),
-    EbaraSensorDescription(
-        key="lot_number",
-        name="Lot Number",
-        esp_entity=ESP_ENTITY_LOT_NUMBER,
-        native_unit_of_measurement=None,
-        device_class=None,
-        state_class=None,
-        is_numeric=False,
-        icon="mdi:calendar-clock",
     ),
 )
 

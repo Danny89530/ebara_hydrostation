@@ -22,7 +22,7 @@ Once it's set up, you get a device in Home Assistant with:
 - **Sensors**: actual/target/start/delta pressure, motor current, motor
   frequency, working hours, module temperature, DC bus voltage, estimated
   water level (derived from motor current), firmware/hardware version,
-  serial and lot number, a decoded error-word (e.g. "Over-temperature",
+  serial number, a decoded error-word (e.g. "Over-temperature",
   "Dry run", ...) and gateway connection status.
 - **Binary sensors**: motor running / motor enabled / motor error.
 - **Switches**: turn the motor on/off, and a "Gateway Enable" switch that
