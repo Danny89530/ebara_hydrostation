@@ -17,6 +17,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_GATEWAY_DEVICE_NAME,
     CONF_GATEWAY_HOST,
     CONF_GATEWAY_NOISE_PSK,
     CONF_GATEWAY_PORT,
@@ -44,6 +45,7 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
         self._gateway_port: int = 6053
         self._gateway_noise_psk: str | None = None
         self._gateway_entry_id: str | None = None  # ESPHome config entry ID
+        self._gateway_device_name: str | None = None
         self._discovered_hydros: dict[str, str] = {}
         # key: "host:port", value: {"label": str, "noise_psk": str|None, "entry_id": str}
         self._gateway_options: dict[str, dict] = {}
@@ -59,6 +61,9 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_abort(reason="already_configured")
         self._gateway_host = host
         self._gateway_port = port
+        self._gateway_device_name = discovery_info.name.removesuffix(
+            "._esphomelib._tcp.local."
+        )
         self.context["title_placeholders"] = {"host": host}
         return await self.async_step_select_hydro()
 
@@ -82,6 +87,7 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
             gw = self._gateway_options.get(selected, {})
             self._gateway_noise_psk = gw.get("noise_psk")
             self._gateway_entry_id = gw.get("entry_id")
+            self._gateway_device_name = gw.get("device_name")
             return await self.async_step_select_hydro()
         if not self._gateway_options:
             return await self.async_step_manual_gateway()
@@ -118,6 +124,7 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
                 if entry.data.get("host") == self._gateway_host:
                     self._gateway_entry_id = entry.entry_id
                     self._gateway_noise_psk = entry.data.get("noise_psk")
+                    self._gateway_device_name = entry.data.get("device_name")
                     break
             return await self.async_step_select_hydro()
         schema = vol.Schema(
@@ -150,6 +157,7 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_GATEWAY_HOST: self._gateway_host,
                     CONF_GATEWAY_PORT: self._gateway_port,
                     CONF_GATEWAY_NOISE_PSK: self._gateway_noise_psk,
+                    CONF_GATEWAY_DEVICE_NAME: self._gateway_device_name,
                     CONF_HYDRO_MAC: mac,
                     CONF_HYDRO_NAME: name,
                 },
@@ -226,6 +234,7 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
                 "label": label,
                 "noise_psk": noise_psk,
                 "entry_id": entry.entry_id,
+                "device_name": entry.data.get("device_name"),
             }
         return gateways
 

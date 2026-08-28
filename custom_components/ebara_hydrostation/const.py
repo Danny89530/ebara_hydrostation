@@ -7,6 +7,10 @@ MODEL = "Hydrostation"
 CONF_GATEWAY_HOST = "gateway_host"
 CONF_GATEWAY_PORT = "gateway_port"
 CONF_GATEWAY_NOISE_PSK = "gateway_noise_psk"
+# ESPHome device name, used as the mDNS name ReconnectLogic tracks so the
+# connection follows the gateway if its IP changes. May be unset, in which
+# case the coordinator falls back to plain host/IP tracking.
+CONF_GATEWAY_DEVICE_NAME = "gateway_device_name"
 CONF_HYDRO_MAC = "hydro_mac"
 CONF_HYDRO_NAME = "hydro_name"
 
