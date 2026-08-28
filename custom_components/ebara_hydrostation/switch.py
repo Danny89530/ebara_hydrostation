@@ -14,7 +14,6 @@ from .const import (
     DOMAIN,
     MANUFACTURER,
     MODEL,
-    ESP_ENTITY_MOTOR_RUNNING,
     ESP_ENTITY_MOTOR_SWITCH,
     ESP_ENTITY_GATEWAY_ENABLE,
 )
@@ -55,8 +54,8 @@ class EbaraMotorSwitch(SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return motor running state."""
-        val = self._coordinator.get_value(ESP_ENTITY_MOTOR_RUNNING)
+        """Return whether the motor's automatic control is enabled."""
+        val = self._coordinator.get_value(ESP_ENTITY_MOTOR_SWITCH)
         if val is None:
             return None
         if isinstance(val, bool):

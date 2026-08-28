@@ -1,7 +1,7 @@
 {
   "domain": "ebara_hydrostation",
   "name": "Ebara Hydrostation",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "codeowners": [],
   "config_flow": true,
   "dependencies": ["esphome", "zeroconf"],
