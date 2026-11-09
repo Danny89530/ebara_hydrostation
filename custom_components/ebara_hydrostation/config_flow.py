@@ -25,6 +25,7 @@ from .const import (
     CONF_HYDRO_MAC,
     CONF_HYDRO_NAME,
     DOMAIN,
+    ESP_ENTITY_DEVICE_NAME,
     ESP_ENTITY_DISCOVERED,
     ESP_ENTITY_GW_STATUS,
     ESP_ENTITY_TARGET_MAC,
@@ -285,8 +286,15 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
             state = self.hass.states.get(target_mac_entity_id)
             if state and _MAC_RE.match(state.state) and state.state not in result:
                 mac = state.state
-                result[mac] = f"Hydrostation ({mac})"
-                self._hydro_names.setdefault(mac, "Hydrostation")
+                # The pump's Bluetooth name, if the gateway already read it;
+                # otherwise a placeholder the integration replaces later.
+                name = "Hydrostation"
+                name_entity_id = self._gateway_entity_id(ESP_ENTITY_DEVICE_NAME)
+                name_state = self.hass.states.get(name_entity_id) if name_entity_id else None
+                if name_state and name_state.state.startswith("HYDRO"):
+                    name = name_state.state
+                result[mac] = f"{name} ({mac})"
+                self._hydro_names.setdefault(mac, name)
 
         return result
 

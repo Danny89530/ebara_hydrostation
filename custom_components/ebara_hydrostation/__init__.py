@@ -142,9 +142,10 @@ def _remove_obsolete_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 @callback
-def _track_device_versions(hass: HomeAssistant, entry: EbaraConfigEntry) -> None:
-    """Keep firmware/hardware version and serial number of the pump device
-    in the device registry, as read by the gateway."""
+def _track_device_info(hass: HomeAssistant, entry: EbaraConfigEntry) -> None:
+    """Keep the pump device up to date with what the gateway reads: firmware
+    and hardware version, serial number, and the pump's Bluetooth name when
+    the entry still has the generic placeholder name."""
     coordinator = entry.runtime_data
     device_reg = dr.async_get(hass)
     last: dict[str, str | None] = {}
@@ -161,6 +162,18 @@ def _track_device_versions(hass: HomeAssistant, entry: EbaraConfigEntry) -> None
             changes["hw_version"] = str(int(hw))
         if serial and serial != "not programmed":
             changes["serial_number"] = str(serial)
+        pump_name = coordinator.get_value(const.ESP_ENTITY_DEVICE_NAME)
+        if (
+            entry.data.get(CONF_HYDRO_NAME) == _GENERIC_PUMP_NAME
+            and isinstance(pump_name, str)
+            and pump_name.startswith("HYDRO")
+        ):
+            changes["name"] = pump_name
+            hass.config_entries.async_update_entry(
+                entry,
+                data={**entry.data, CONF_HYDRO_NAME: pump_name},
+                title=pump_name if entry.title == _GENERIC_PUMP_NAME else entry.title,
+            )
         if not changes or all(last.get(k) == v for k, v in changes.items()):
             return
         # The entry owns exactly one device: the pump.
@@ -181,9 +194,15 @@ def _track_device_versions(hass: HomeAssistant, entry: EbaraConfigEntry) -> None
     entry.async_on_unload(coordinator.async_add_listener(_update))
 
 
-# Pump name as stored by the version 1.x config flow: the list label
-# "HYDRO_1234 (AA:BB:CC:DD:EE:FF, -70 dBm)" instead of the plain name.
-_LEGACY_NAME_RE = re.compile(r"^(?P<name>.+?) \((?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}, -?\d+ dBm\)$")
+# Pump name as stored by the version 1.x config flow: the list label, with
+# the MAC and possibly the signal strength, instead of the plain name —
+# "HYDRO_1234 (AA:BB:CC:DD:EE:FF, -70 dBm)" or "Hydrostation (AA:BB:CC:DD:EE:FF)".
+_LEGACY_NAME_RE = re.compile(
+    r"^(?P<name>.+?) \((?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}(?:, -?\d+ dBm)?\)$"
+)
+# Placeholder name used when the pump's Bluetooth name was not known at setup:
+# replaced by the real name ("HYDRO_xxxx") as soon as the gateway reports it.
+_GENERIC_PUMP_NAME = "Hydrostation"
 
 
 @callback
@@ -214,7 +233,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: EbaraConfigEntry) -> boo
     entry.runtime_data = coordinator
     await coordinator.async_start()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    _track_device_versions(hass, entry)
+    _track_device_info(hass, entry)
     _disable_duplicate_esphome_entities_once(hass, entry)
     return True
 

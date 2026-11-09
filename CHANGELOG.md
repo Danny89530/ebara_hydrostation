@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.1
+
+### Fixed
+
+- Entries created by 1.x with the name "Hydrostation (MAC)" (pump picked
+  from the MAC already configured on the gateway) are renamed too: the MAC is
+  removed and the generic name is replaced by the pump's Bluetooth name
+  ("HYDRO_xxxx") as soon as the gateway reports it. 2.0.0 only handled the
+  "HYDRO_xxxx (MAC, -NN dBm)" form.
+- New setups that pick the pump from the gateway's configured MAC use the
+  pump's Bluetooth name instead of the generic "Hydrostation".
+
+Device and entry names never contain the MAC address or the signal strength:
+these are shown only in the setup wizard's list. A name you set yourself is
+never changed.
+
 ## 2.0.0
 
 Requires the ESPHome gateway component
