@@ -1,6 +1,7 @@
 """Sensor entities for Ebara Hydrostation."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,36 +11,59 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfPressure,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from . import EbaraConfigEntry, alarms
 from .const import (
-    CONF_HYDRO_MAC,
-    CONF_HYDRO_NAME,
-    DOMAIN,
-    MANUFACTURER,
-    MODEL,
-    ESP_ENTITY_PRESSURE_ACTUAL,
-    ESP_ENTITY_PRESSURE_TARGET,
-    ESP_ENTITY_PRESSURE_START,
-    ESP_ENTITY_PRESSURE_DELTA,
-    ESP_ENTITY_MOTOR_FREQ,
+    ESP_ENTITY_DEVICE_NAME,
+    ESP_ENTITY_ERROR_TEXT,
+    ESP_ENTITY_FW_VERSION,
+    ESP_ENTITY_GW_STATUS,
+    ESP_ENTITY_HW_VERSION,
     ESP_ENTITY_MOTOR_CURRENT,
+    ESP_ENTITY_MOTOR_FREQ,
+    ESP_ENTITY_PRESSURE_ACTUAL,
+    ESP_ENTITY_PRESSURE_DELTA,
+    ESP_ENTITY_PRESSURE_START,
+    ESP_ENTITY_PRESSURE_TARGET,
+    ESP_ENTITY_PRESSURE_UNIT,
+    ESP_ENTITY_PUMP_LOAD,
+    ESP_ENTITY_PUMP_STATUS,
+    ESP_ENTITY_SERIAL_NUMBER,
     ESP_ENTITY_TEMPERATURE,
     ESP_ENTITY_VOLTAGE,
     ESP_ENTITY_WORKING_HOURS,
-    ESP_ENTITY_FW_VERSION,
-    ESP_ENTITY_HW_VERSION,
-    ESP_ENTITY_WATER_LEVEL,
-    ESP_ENTITY_ERROR_WORD,
-    ESP_ENTITY_STATUS_WORD,
-    ESP_ENTITY_ERROR_TEXT,
-    ESP_ENTITY_GW_STATUS,
-    ESP_ENTITY_SERIAL_NUMBER,
 )
 from .coordinator import EbaraCoordinator
+from .entity import EbaraEntity
+
+PARALLEL_UPDATES = 0
+
+# Alarm entries in the gateway's "Errors" text: "<code> <english text>".
+_ALARM_ITEM_RE = re.compile(r"\b([EHC]\d\d\+?) ([^,]+)")
+
+
+# Gateway "Pump Status" strings (same priority/meaning as the official app)
+# mapped to translatable enum keys.
+PUMP_STATUS_KEYS: dict[str, str] = {
+    "External Stop": "external_stop",
+    "Running": "running",
+    "Assist Mode": "assist",
+    "Standby": "standby",
+    "Alarm": "alarm",
+    "Pump Off": "off",
+    "Offline": "offline",
+}
 
 
 @dataclass(frozen=True)
@@ -49,175 +73,145 @@ class EbaraSensorDescription(SensorEntityDescription):
     is_numeric: bool = True
 
 
-SENSOR_DESCRIPTIONS: tuple[EbaraSensorDescription, ...] = (
-    EbaraSensorDescription(
-        key="pressure_actual",
-        name="Actual Pressure",
-        esp_entity=ESP_ENTITY_PRESSURE_ACTUAL,
-        native_unit_of_measurement="bar",
+def _pressure(key: str, esp: str, icon: str | None = None) -> EbaraSensorDescription:
+    # Raw resolution is 0.1 bar: one decimal, never more.
+    return EbaraSensorDescription(
+        key=key,
+        translation_key=key,
+        esp_entity=esp,
+        native_unit_of_measurement=UnitOfPressure.BAR,
         device_class=SensorDeviceClass.PRESSURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        icon="mdi:gauge",
-    ),
-    EbaraSensorDescription(
-        key="pressure_target",
-        name="Target Pressure",
-        esp_entity=ESP_ENTITY_PRESSURE_TARGET,
-        native_unit_of_measurement="bar",
-        device_class=SensorDeviceClass.PRESSURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        icon="mdi:gauge-low",
-    ),
-    EbaraSensorDescription(
-        key="pressure_start",
-        name="Start Pressure",
-        esp_entity=ESP_ENTITY_PRESSURE_START,
-        native_unit_of_measurement="bar",
-        device_class=SensorDeviceClass.PRESSURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        icon="mdi:gauge-empty",
-    ),
-    EbaraSensorDescription(
-        key="pressure_delta",
-        name="Delta Pressure",
-        esp_entity=ESP_ENTITY_PRESSURE_DELTA,
-        native_unit_of_measurement="bar",
-        device_class=SensorDeviceClass.PRESSURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        icon="mdi:delta",
-    ),
-    EbaraSensorDescription(
-        key="motor_frequency",
-        name="Motor Frequency",
-        esp_entity=ESP_ENTITY_MOTOR_FREQ,
-        native_unit_of_measurement="Hz",
-        device_class=SensorDeviceClass.FREQUENCY,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
+        icon=icon,
+    )
+
+
+SENSOR_DESCRIPTIONS: tuple[EbaraSensorDescription, ...] = (
+    _pressure("pressure_actual", ESP_ENTITY_PRESSURE_ACTUAL),
+    _pressure("pressure_target", ESP_ENTITY_PRESSURE_TARGET),
+    # Read-only: equals target − delta.
+    _pressure("pressure_start", ESP_ENTITY_PRESSURE_START),
+    _pressure("pressure_delta", ESP_ENTITY_PRESSURE_DELTA),
+    EbaraSensorDescription(
+        key="motor_frequency",
+        translation_key="motor_frequency",
+        esp_entity=ESP_ENTITY_MOTOR_FREQ,
+        # Unit not confirmed by the official app (never displayed): raw value.
+        native_unit_of_measurement=None,
+        device_class=None,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
         icon="mdi:sine-wave",
     ),
     EbaraSensorDescription(
         key="motor_current",
-        name="Motor Current",
+        translation_key="motor_current",
         esp_entity=ESP_ENTITY_MOTOR_CURRENT,
-        native_unit_of_measurement="A",
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        icon="mdi:current-ac",
+        suggested_display_precision=1,
     ),
     EbaraSensorDescription(
         key="temperature",
-        name="Module Temperature",
+        translation_key="temperature",
         esp_entity=ESP_ENTITY_TEMPERATURE,
-        native_unit_of_measurement="°C",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        icon="mdi:thermometer",
+        suggested_display_precision=0,
     ),
     EbaraSensorDescription(
         key="voltage",
-        name="DC Bus Voltage",
+        translation_key="voltage",
         esp_entity=ESP_ENTITY_VOLTAGE,
-        native_unit_of_measurement="V",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        icon="mdi:flash",
+        suggested_display_precision=0,
     ),
     EbaraSensorDescription(
         key="working_hours",
-        name="Working Hours",
+        translation_key="working_hours",
         esp_entity=ESP_ENTITY_WORKING_HOURS,
-        native_unit_of_measurement="h",
+        native_unit_of_measurement=UnitOfTime.HOURS,
         device_class=None,
         state_class=SensorStateClass.TOTAL_INCREASING,
         suggested_display_precision=0,
-        icon="mdi:timer-outline",
     ),
     EbaraSensorDescription(
-        key="fw_version",
-        name="Firmware Version",
-        esp_entity=ESP_ENTITY_FW_VERSION,
-        native_unit_of_measurement=None,
-        device_class=None,
-        state_class=None,
-        suggested_display_precision=2,
-        icon="mdi:chip",
-    ),
-    EbaraSensorDescription(
-        key="hw_version",
-        name="Hardware Version",
-        esp_entity=ESP_ENTITY_HW_VERSION,
-        native_unit_of_measurement=None,
-        device_class=None,
-        state_class=None,
-        suggested_display_precision=0,
-        icon="mdi:circuit-board",
-    ),
-    EbaraSensorDescription(
-        key="water_level",
-        name="Estimated Water Level",
-        esp_entity=ESP_ENTITY_WATER_LEVEL,
-        native_unit_of_measurement="%",
+        key="pump_load",
+        translation_key="pump_load",
+        esp_entity=ESP_ENTITY_PUMP_LOAD,
+        native_unit_of_measurement=PERCENTAGE,
         device_class=None,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=0,
-        icon="mdi:water-percent",
+        icon="mdi:speedometer",
     ),
     EbaraSensorDescription(
-        key="error_word",
-        name="Error Word",
-        esp_entity=ESP_ENTITY_ERROR_WORD,
-        native_unit_of_measurement=None,
-        device_class=None,
-        state_class=None,
-        suggested_display_precision=0,
-        icon="mdi:alert-octagon",
-    ),
-    EbaraSensorDescription(
-        key="status_word",
-        name="Status Word",
-        esp_entity=ESP_ENTITY_STATUS_WORD,
-        native_unit_of_measurement=None,
-        device_class=None,
-        state_class=None,
-        suggested_display_precision=0,
-        icon="mdi:state-machine",
+        key="pump_status",
+        translation_key="pump_status",
+        esp_entity=ESP_ENTITY_PUMP_STATUS,
+        is_numeric=False,
+        device_class=SensorDeviceClass.ENUM,
+        options=list(PUMP_STATUS_KEYS.values()),
+        icon="mdi:pump",
     ),
     EbaraSensorDescription(
         key="error_text",
-        name="Active Errors",
+        translation_key="error_text",
         esp_entity=ESP_ENTITY_ERROR_TEXT,
-        native_unit_of_measurement=None,
-        device_class=None,
-        state_class=None,
         is_numeric=False,
         icon="mdi:alert",
     ),
     EbaraSensorDescription(
-        key="gw_status",
-        name="Gateway Status",
-        esp_entity=ESP_ENTITY_GW_STATUS,
-        native_unit_of_measurement=None,
-        device_class=None,
-        state_class=None,
+        key="fw_version",
+        translation_key="fw_version",
+        esp_entity=ESP_ENTITY_FW_VERSION,
         is_numeric=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:chip",
+    ),
+    EbaraSensorDescription(
+        key="hw_version",
+        translation_key="hw_version",
+        esp_entity=ESP_ENTITY_HW_VERSION,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=0,
+        icon="mdi:circuit-board",
+    ),
+    EbaraSensorDescription(
+        key="pressure_unit",
+        translation_key="pressure_unit",
+        esp_entity=ESP_ENTITY_PRESSURE_UNIT,
+        is_numeric=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:gauge",
+    ),
+    EbaraSensorDescription(
+        key="device_name",
+        translation_key="device_name",
+        esp_entity=ESP_ENTITY_DEVICE_NAME,
+        is_numeric=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:bluetooth",
+    ),
+    EbaraSensorDescription(
+        key="gw_status",
+        translation_key="gw_status",
+        esp_entity=ESP_ENTITY_GW_STATUS,
+        is_numeric=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:state-machine",
     ),
     EbaraSensorDescription(
         key="serial_number",
-        name="Serial Number",
+        translation_key="serial_number",
         esp_entity=ESP_ENTITY_SERIAL_NUMBER,
-        native_unit_of_measurement=None,
-        device_class=None,
-        state_class=None,
         is_numeric=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:barcode",
     ),
 )
@@ -225,43 +219,57 @@ SENSOR_DESCRIPTIONS: tuple[EbaraSensorDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: EbaraConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Ebara sensors."""
-    coordinator: EbaraCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        EbaraSensor(coordinator, entry, desc) for desc in SENSOR_DESCRIPTIONS
-    )
+    coordinator = entry.runtime_data
+    async_add_entities(EbaraSensor(coordinator, desc) for desc in SENSOR_DESCRIPTIONS)
 
 
-class EbaraSensor(SensorEntity):
+class EbaraSensor(EbaraEntity, SensorEntity):
     """A sensor entity backed by an ESP32 gateway entity."""
 
     entity_description: EbaraSensorDescription
-    _attr_has_entity_name = True
 
-    def __init__(
-        self,
-        coordinator: EbaraCoordinator,
-        entry: ConfigEntry,
-        description: EbaraSensorDescription,
-    ) -> None:
+    def __init__(self, coordinator: EbaraCoordinator, description: EbaraSensorDescription) -> None:
+        super().__init__(coordinator, description.key)
         self.entity_description = description
-        self._coordinator = coordinator
-        mac = entry.data[CONF_HYDRO_MAC]
-        hydro_name = entry.data[CONF_HYDRO_NAME]
-        self._attr_unique_id = f"{mac}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, mac)},
-            name=hydro_name,
-            manufacturer=MANUFACTURER,
-            model=MODEL,
-        )
+
+    def _language(self) -> str:
+        return self.hass.config.language if self.hass else "en"
+
+    def _active_alarms(self) -> list[dict[str, str]] | None:
+        """Active alarms from the gateway's alarm text (it lists codes only
+        while the status-word alarm bit is set, like the official app),
+        translated with the app's own texts in the HA language. None while
+        the pump is offline/unknown."""
+        text = self.coordinator.get_value(ESP_ENTITY_ERROR_TEXT)
+        if text is None or str(text).startswith("Unknown"):
+            return None
+        items = _ALARM_ITEM_RE.findall(str(text))
+        psi = str(self.coordinator.get_value(ESP_ENTITY_PRESSURE_UNIT) or "") == "psi"
+        return alarms.decode_codes(items, psi=psi, lang=self._language())
+
+    def _alarm_without_code(self) -> bool:
+        return str(self.coordinator.get_value(ESP_ENTITY_ERROR_TEXT) or "").startswith("Alarm")
+
+    def _localized_alarms(self) -> str | None:
+        active = self._active_alarms()
+        if active is None:
+            return None
+        italian = self._language().startswith("it")
+        if not active:
+            if self._alarm_without_code():
+                return "Allarme (codice non disponibile)" if italian else "Alarm (no code)"
+            return "Nessun allarme attivo" if italian else "No active alarms"
+        return ", ".join(f"{a['code']} {a['text']}" for a in active)[:255]
 
     @property
     def native_value(self) -> Any:
-        val = self._coordinator.get_value(self.entity_description.esp_entity)
+        if self.entity_description.key == "error_text":
+            return self._localized_alarms()
+        val = self.coordinator.get_value(self.entity_description.esp_entity)
         if val is None:
             return None
         if self.entity_description.is_numeric:
@@ -269,23 +277,21 @@ class EbaraSensor(SensorEntity):
                 fval = float(val)
             except (TypeError, ValueError):
                 return None
-            # suggested_display_precision only affects the *frontend* card
-            # rendering — entities without a unit/device_class (e.g.
-            # Firmware Version) don't get the same rounding applied there,
-            # so the raw float32-imprecision (2.5999999046325684 instead of
-            # 2.6) showed through unrounded. Round the actual native_value
-            # itself so it's clean regardless of frontend heuristics.
+            # Round the value itself (the gateway sends float32 values).
             precision = self.entity_description.suggested_display_precision
             if precision is not None:
                 fval = round(fval, precision)
             return fval
+        if self.entity_description.key == "pump_status":
+            return PUMP_STATUS_KEYS.get(str(val))
         return str(val)
 
     @property
-    def available(self) -> bool:
-        return self._coordinator._connected  # noqa: SLF001
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            self._coordinator.async_add_listener(self.async_write_ha_state)
-        )
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Alarm details (code, severity, text, remedy) like the app's alarm list."""
+        if self.entity_description.key != "error_text":
+            return None
+        active = self._active_alarms()
+        if active is None:
+            return None
+        return {"alarm_active": bool(active) or self._alarm_without_code(), "alarms": active}

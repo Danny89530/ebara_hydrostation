@@ -1,126 +1,81 @@
-"""Switch entity for Ebara Hydrostation motor control."""
+"""Switch entities for Ebara Hydrostation (motor, gateway enable)."""
 from __future__ import annotations
 
-from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
-from homeassistant.config_entries import ConfigEntry
+from dataclasses import dataclass
+from typing import Any
+
+from homeassistant.components.switch import (
+    SwitchDeviceClass,
+    SwitchEntity,
+    SwitchEntityDescription,
+)
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import (
-    CONF_HYDRO_MAC,
-    CONF_HYDRO_NAME,
-    DOMAIN,
-    MANUFACTURER,
-    MODEL,
-    ESP_ENTITY_MOTOR_SWITCH,
-    ESP_ENTITY_GATEWAY_ENABLE,
-)
+from . import EbaraConfigEntry
+from .const import ESP_ENTITY_GATEWAY_ENABLE, ESP_ENTITY_MOTOR_SWITCH
 from .coordinator import EbaraCoordinator
+from .entity import EbaraEntity
+
+PARALLEL_UPDATES = 1
+
+
+@dataclass(frozen=True, kw_only=True)
+class EbaraSwitchDescription(SwitchEntityDescription):
+    esp_entity: str
+    unique_suffix: str
+
+
+SWITCH_DESCRIPTIONS: tuple[EbaraSwitchDescription, ...] = (
+    # Automatic control of the pump (sm-0005): not whether the motor spins.
+    EbaraSwitchDescription(
+        key="motor",
+        translation_key="motor",
+        esp_entity=ESP_ENTITY_MOTOR_SWITCH,
+        unique_suffix="motor_switch",
+        device_class=SwitchDeviceClass.SWITCH,
+        icon="mdi:pump",
+    ),
+    # Master enable of the gateway's BLE connection to the pump.
+    EbaraSwitchDescription(
+        key="gateway_enable",
+        translation_key="gateway_enable",
+        esp_entity=ESP_ENTITY_GATEWAY_ENABLE,
+        unique_suffix="gateway_enable",
+        device_class=SwitchDeviceClass.SWITCH,
+        entity_category=EntityCategory.CONFIG,
+        icon="mdi:bluetooth-connect",
+    ),
+)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: EbaraConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the motor and gateway-enable switch entities."""
-    coordinator: EbaraCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [EbaraMotorSwitch(coordinator, entry), EbaraGatewayEnableSwitch(coordinator, entry)]
-    )
+    """Set up the switch entities."""
+    coordinator = entry.runtime_data
+    async_add_entities(EbaraSwitch(coordinator, desc) for desc in SWITCH_DESCRIPTIONS)
 
 
-class EbaraMotorSwitch(SwitchEntity):
-    """Switch entity that controls the Hydrostation motor via ESP32."""
+class EbaraSwitch(EbaraEntity, SwitchEntity):
+    """Switch mirroring a gateway switch entity."""
 
-    _attr_has_entity_name = True
-    _attr_name = "Motor"
-    _attr_icon = "mdi:pump"
-    _attr_device_class = SwitchDeviceClass.SWITCH
+    entity_description: EbaraSwitchDescription
 
-    def __init__(self, coordinator: EbaraCoordinator, entry: ConfigEntry) -> None:
-        self._coordinator = coordinator
-        mac = entry.data[CONF_HYDRO_MAC]
-        hydro_name = entry.data[CONF_HYDRO_NAME]
-        self._attr_unique_id = f"{mac}_motor_switch"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, mac)},
-            name=hydro_name,
-            manufacturer=MANUFACTURER,
-            model=MODEL,
-        )
+    def __init__(self, coordinator: EbaraCoordinator, description: EbaraSwitchDescription) -> None:
+        super().__init__(coordinator, description.unique_suffix)
+        self.entity_description = description
 
     @property
     def is_on(self) -> bool | None:
-        """Return whether the motor's automatic control is enabled."""
-        val = self._coordinator.get_value(ESP_ENTITY_MOTOR_SWITCH)
-        if val is None:
-            return None
-        if isinstance(val, bool):
-            return val
-        return bool(val)
+        val = self.coordinator.get_value(self.entity_description.esp_entity)
+        return None if val is None else bool(val)
 
-    @property
-    def available(self) -> bool:
-        return self._coordinator._connected  # noqa: SLF001
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_send_command(self.entity_description.esp_entity, True)
 
-    async def async_turn_on(self, **kwargs) -> None:
-        """Turn the motor on."""
-        await self._coordinator.async_send_command(ESP_ENTITY_MOTOR_SWITCH, True)
-
-    async def async_turn_off(self, **kwargs) -> None:
-        """Turn the motor off."""
-        await self._coordinator.async_send_command(ESP_ENTITY_MOTOR_SWITCH, False)
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            self._coordinator.async_add_listener(self.async_write_ha_state)
-        )
-
-
-class EbaraGatewayEnableSwitch(SwitchEntity):
-    """Master enable/disable switch for the ESP32 gateway's BLE connection."""
-
-    _attr_has_entity_name = True
-    _attr_name = "Gateway Enable"
-    _attr_icon = "mdi:bluetooth-connect"
-    _attr_device_class = SwitchDeviceClass.SWITCH
-    _attr_entity_category = EntityCategory.CONFIG
-
-    def __init__(self, coordinator: EbaraCoordinator, entry: ConfigEntry) -> None:
-        self._coordinator = coordinator
-        mac = entry.data[CONF_HYDRO_MAC]
-        hydro_name = entry.data[CONF_HYDRO_NAME]
-        self._attr_unique_id = f"{mac}_gateway_enable"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, mac)},
-            name=hydro_name,
-            manufacturer=MANUFACTURER,
-            model=MODEL,
-        )
-
-    @property
-    def is_on(self) -> bool | None:
-        val = self._coordinator.get_value(ESP_ENTITY_GATEWAY_ENABLE)
-        if val is None:
-            return None
-        if isinstance(val, bool):
-            return val
-        return bool(val)
-
-    @property
-    def available(self) -> bool:
-        return self._coordinator._connected  # noqa: SLF001
-
-    async def async_turn_on(self, **kwargs) -> None:
-        await self._coordinator.async_send_command(ESP_ENTITY_GATEWAY_ENABLE, True)
-
-    async def async_turn_off(self, **kwargs) -> None:
-        await self._coordinator.async_send_command(ESP_ENTITY_GATEWAY_ENABLE, False)
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            self._coordinator.async_add_listener(self.async_write_ha_state)
-        )
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_send_command(self.entity_description.esp_entity, False)

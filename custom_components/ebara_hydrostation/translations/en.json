@@ -15,7 +15,7 @@
       },
       "manual_gateway": {
         "title": "Gateway Address",
-        "description": "Enter the ESP32 gateway IP address manually.",
+        "description": "Enter the IP address of the ESP32 gateway. It must already be set up in the ESPHome integration.",
         "data": {
           "host": "Host / IP address",
           "port": "Port (default 6053)"
@@ -23,20 +23,136 @@
       },
       "select_hydro": {
         "title": "Select Hydrostation",
-        "description": "Choose the Hydrostation to add:",
+        "description": "Choose the Hydrostation to add. If the list is empty, check the pump and submit again to retry.",
         "data": {
           "hydro_mac": "Hydrostation"
         }
       }
     },
     "error": {
-      "cannot_connect": "Cannot connect to gateway. Check that the ESP32 is online and the API is accessible.",
-      "no_devices_found": "No Hydrostations discovered. Make sure the device is powered on and within BLE range of the gateway.",
-      "no_gateway_found": "No gateway found. Flash the ESP32 with the Ebara gateway firmware first."
+      "no_devices_found": "No supported Hydrostation discovered. Make sure the pump is powered on and within Bluetooth range of the gateway, then submit again.",
+      "esphome_entry_missing": "No ESPHome device with this address. Add the gateway to the ESPHome integration first."
     },
     "abort": {
       "already_configured": "This Hydrostation is already configured.",
-      "no_gateway": "No compatible gateway found on the network."
+      "gateway_already_configured": "This gateway is already used by another Hydrostation (one gateway drives one pump)."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "pressure_actual": {
+        "name": "Actual pressure"
+      },
+      "pressure_target": {
+        "name": "Target pressure"
+      },
+      "pressure_start": {
+        "name": "Start pressure"
+      },
+      "pressure_delta": {
+        "name": "Restart delta"
+      },
+      "motor_frequency": {
+        "name": "Motor frequency (raw)"
+      },
+      "motor_current": {
+        "name": "Motor current"
+      },
+      "temperature": {
+        "name": "Module temperature"
+      },
+      "voltage": {
+        "name": "DC bus voltage"
+      },
+      "working_hours": {
+        "name": "Working hours"
+      },
+      "pump_load": {
+        "name": "Estimated pump load"
+      },
+      "pump_status": {
+        "name": "Pump status",
+        "state": {
+          "external_stop": "External stop",
+          "running": "Running",
+          "assist": "Assist mode",
+          "standby": "Standby",
+          "alarm": "Alarm",
+          "off": "Pump off",
+          "offline": "Offline"
+        }
+      },
+      "error_text": {
+        "name": "Active alarms"
+      },
+      "fw_version": {
+        "name": "Firmware version"
+      },
+      "hw_version": {
+        "name": "Hardware version"
+      },
+      "pressure_unit": {
+        "name": "Pressure unit"
+      },
+      "device_name": {
+        "name": "Pump device name"
+      },
+      "gw_status": {
+        "name": "Gateway status"
+      },
+      "serial_number": {
+        "name": "Serial number"
+      }
+    },
+    "binary_sensor": {
+      "motor_running": {
+        "name": "Motor running"
+      },
+      "motor_enabled": {
+        "name": "Motor enabled"
+      },
+      "motor_error": {
+        "name": "Pump alarm"
+      },
+      "external_stop": {
+        "name": "External stop"
+      },
+      "status_bit10": {
+        "name": "Status bit 10 (undocumented)"
+      }
+    },
+    "switch": {
+      "motor": {
+        "name": "Motor"
+      },
+      "gateway_enable": {
+        "name": "Gateway enable"
+      }
+    },
+    "number": {
+      "set_target_pressure": {
+        "name": "Set target pressure"
+      },
+      "set_delta_pressure": {
+        "name": "Set restart delta"
+      },
+      "poll_interval": {
+        "name": "Update interval"
+      }
+    }
+  },
+  "exceptions": {
+    "gateway_not_connected": {
+      "message": "The ESP32 gateway is not connected."
+    },
+    "gateway_entity_missing": {
+      "message": "The ESP32 gateway does not expose the entity '{entity}': update the gateway firmware."
+    }
+  },
+  "issues": {
+    "gateway_outdated": {
+      "title": "Ebara gateway needs updating",
+      "description": "The ESP32 gateway {gateway} does not expose these entities: {missing}. Update the ESPHome component (recompile the gateway) and add the new entities to its YAML as described in the changelog. Until then the corresponding Hydrostation entities stay unknown."
     }
   }
 }

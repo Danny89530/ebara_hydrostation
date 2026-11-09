@@ -8,8 +8,8 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
@@ -18,12 +18,16 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_GATEWAY_DEVICE_NAME,
+    CONF_GATEWAY_ENTRY_ID,
     CONF_GATEWAY_HOST,
     CONF_GATEWAY_NOISE_PSK,
     CONF_GATEWAY_PORT,
     CONF_HYDRO_MAC,
     CONF_HYDRO_NAME,
     DOMAIN,
+    ESP_ENTITY_DISCOVERED,
+    ESP_ENTITY_GW_STATUS,
+    ESP_ENTITY_TARGET_MAC,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,7 +36,7 @@ _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
 # Entities this component always creates on the ESP32 gateway, used to
 # recognize a gateway regardless of what the user named the device itself.
-_GATEWAY_SIGNATURE_ENTITY_NAMES = {"Target MAC", "GW Status"}
+_GATEWAY_SIGNATURE_ENTITY_NAMES = {ESP_ENTITY_TARGET_MAC, ESP_ENTITY_GW_STATUS}
 
 
 class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -44,33 +48,17 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
         self._gateway_host: str = ""
         self._gateway_port: int = 6053
         self._gateway_noise_psk: str | None = None
-        self._gateway_entry_id: str | None = None  # ESPHome config entry ID
+        self._gateway_entry_id: str | None = None  # native ESPHome config entry
         self._gateway_device_name: str | None = None
-        self._discovered_hydros: dict[str, str] = {}
-        # key: "host:port", value: {"label": str, "noise_psk": str|None, "entry_id": str}
-        self._gateway_options: dict[str, dict] = {}
-
-    async def async_step_zeroconf(
-        self, discovery_info: ZeroconfServiceInfo
-    ) -> ConfigFlowResult:
-        """Handle zeroconf discovery of an Ebara gateway."""
-        host = discovery_info.host
-        port = discovery_info.port or 6053
-        for entry in self._async_current_entries():
-            if entry.data.get(CONF_GATEWAY_HOST) == host:
-                return self.async_abort(reason="already_configured")
-        self._gateway_host = host
-        self._gateway_port = port
-        self._gateway_device_name = discovery_info.name.removesuffix(
-            "._esphomelib._tcp.local."
-        )
-        self.context["title_placeholders"] = {"host": host}
-        return await self.async_step_select_hydro()
+        self._discovered_hydros: dict[str, str] = {}  # mac -> list label
+        self._hydro_names: dict[str, str] = {}  # mac -> pump name (e.g. HYDRO_1234)
+        # key: "host:port" → {"label", "noise_psk", "entry_id", "device_name"}
+        self._gateway_options: dict[str, dict[str, Any]] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        self._gateway_options = await self._find_esphome_gateways()
+        self._gateway_options = self._find_esphome_gateways()
         if self._gateway_options:
             return await self.async_step_gateway()
         return await self.async_step_manual_gateway()
@@ -78,19 +66,20 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_gateway(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
         if user_input is not None:
             selected = user_input["gateway"]
-            host, _, port_str = selected.partition(":")
-            self._gateway_host = host
-            self._gateway_port = int(port_str) if port_str else 6053
             gw = self._gateway_options.get(selected, {})
-            self._gateway_noise_psk = gw.get("noise_psk")
-            self._gateway_entry_id = gw.get("entry_id")
-            self._gateway_device_name = gw.get("device_name")
+            host, _, port_str = selected.partition(":")
+            self._set_gateway(
+                host,
+                int(port_str) if port_str else 6053,
+                gw.get("entry_id"),
+                gw.get("noise_psk"),
+                gw.get("device_name"),
+            )
+            if self._gateway_in_use():
+                return self.async_abort(reason="gateway_already_configured")
             return await self.async_step_select_hydro()
-        if not self._gateway_options:
-            return await self.async_step_manual_gateway()
         schema = vol.Schema(
             {
                 vol.Required("gateway"): SelectSelector(
@@ -104,29 +93,38 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             }
         )
-        return self.async_show_form(step_id="gateway", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="gateway", data_schema=schema)
 
     async def async_step_manual_gateway(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            self._gateway_host = user_input["host"]
-            self._gateway_port = int(user_input.get("port", 6053))
-            # Resolve the matching native ESPHome config entry by host, so
-            # the entity-registry-based discovery/fallback lookups in
-            # async_step_select_hydro() still work — without this,
-            # _gateway_entry_id stayed None on this path (it's normally set
-            # by async_step_gateway()), so those lookups matched nothing and
-            # setup always failed with "no devices found" whenever the
-            # gateway wasn't auto-detected and had to be entered manually.
-            for entry in self.hass.config_entries.async_entries("esphome"):
-                if entry.data.get("host") == self._gateway_host:
-                    self._gateway_entry_id = entry.entry_id
-                    self._gateway_noise_psk = entry.data.get("noise_psk")
-                    self._gateway_device_name = entry.data.get("device_name")
-                    break
-            return await self.async_step_select_hydro()
+            host = user_input["host"].strip()
+            # The gateway must already be set up in the native ESPHome
+            # integration: discovery list and target MAC are read/written
+            # through its entities.
+            esphome_entry = next(
+                (
+                    e
+                    for e in self.hass.config_entries.async_entries("esphome")
+                    if e.data.get("host") == host
+                ),
+                None,
+            )
+            if esphome_entry is None:
+                errors["base"] = "esphome_entry_missing"
+            else:
+                self._set_gateway(
+                    host,
+                    int(user_input.get("port", 6053)),
+                    esphome_entry.entry_id,
+                    esphome_entry.data.get("noise_psk"),
+                    esphome_entry.data.get("device_name"),
+                )
+                if self._gateway_in_use():
+                    return self.async_abort(reason="gateway_already_configured")
+                return await self.async_step_select_hydro()
         schema = vol.Schema(
             {
                 vol.Required("host"): str,
@@ -141,16 +139,15 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-        if user_input is not None:
+        if user_input is not None and user_input.get("hydro_mac"):
             mac = user_input["hydro_mac"]
-            name = self._discovered_hydros.get(mac, mac)
-            try:
-                await self._write_target_mac(mac)
-            except Exception as err:
-                _LOGGER.warning("Could not write target MAC to ESP32: %s", err)
-            unique_id = mac.replace(":", "").lower()
-            await self.async_set_unique_id(unique_id)
+            # Abort before touching the gateway if this pump already exists.
+            await self.async_set_unique_id(mac.replace(":", "").lower())
             self._abort_if_unique_id_configured()
+            # Device/entry name: the pump's own name, not the list label
+            # (which also carries MAC and RSSI).
+            name = self._hydro_names.get(mac, "Hydrostation")
+            await self._write_target_mac(mac)
             return self.async_create_entry(
                 title=name,
                 data={
@@ -158,18 +155,15 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_GATEWAY_PORT: self._gateway_port,
                     CONF_GATEWAY_NOISE_PSK: self._gateway_noise_psk,
                     CONF_GATEWAY_DEVICE_NAME: self._gateway_device_name,
+                    CONF_GATEWAY_ENTRY_ID: self._gateway_entry_id,
                     CONF_HYDRO_MAC: mac,
                     CONF_HYDRO_NAME: name,
                 },
             )
-        try:
-            self._discovered_hydros = await self._read_discovered_hydros()
-        except Exception as err:
-            _LOGGER.error("Failed to read from ESP32 gateway: %s", err)
-            errors["base"] = "cannot_connect"
-        if not errors and not self._discovered_hydros:
+        # First display, or the error form below was submitted (retry).
+        self._discovered_hydros = self._read_discovered_hydros()
+        if not self._discovered_hydros:
             errors["base"] = "no_devices_found"
-        if errors:
             return self.async_show_form(
                 step_id="select_hydro", data_schema=vol.Schema({}), errors=errors
             )
@@ -186,135 +180,133 @@ class EbaraConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             }
         )
-        return self.async_show_form(
-            step_id="select_hydro", data_schema=schema, errors=errors
+        return self.async_show_form(step_id="select_hydro", data_schema=schema)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _set_gateway(
+        self,
+        host: str,
+        port: int,
+        entry_id: str | None,
+        noise_psk: str | None,
+        device_name: str | None,
+    ) -> None:
+        self._gateway_host = host
+        self._gateway_port = port
+        self._gateway_entry_id = entry_id
+        self._gateway_noise_psk = noise_psk
+        self._gateway_device_name = device_name
+
+    def _gateway_in_use(self) -> bool:
+        """One gateway drives exactly one pump (single BLE target)."""
+        return any(
+            entry.data.get(CONF_GATEWAY_HOST) == self._gateway_host
+            or (
+                self._gateway_entry_id is not None
+                and entry.data.get(CONF_GATEWAY_ENTRY_ID) == self._gateway_entry_id
+            )
+            for entry in self._async_current_entries(include_ignore=False)
         )
 
-    async def _find_esphome_gateways(self) -> dict[str, dict]:
-        """Find ESPHome config entries that look like an Ebara Hydrostation
-        gateway.
-
-        Matches by looking for this component's own signature entities
-        ("Target MAC" and "GW Status") rather than the device's own display
-        name — that name is fully user-customizable (e.g. renamed to
-        reflect where the gateway is physically installed), so filtering by
-        a fixed "ebara-hydro" name prefix silently found nothing for any
-        renamed device.
-        """
-        from homeassistant.helpers import entity_registry as er
-
+    def _gateway_entity_id(self, original_name: str) -> str | None:
+        """entity_id of a gateway entity, by the name the component gives it
+        (not by entity_id, which the user may have renamed)."""
+        if self._gateway_entry_id is None:
+            return None
         ent_reg = er.async_get(self.hass)
-        entry_signature_names: dict[str, set[str]] = {}
-        for entity in ent_reg.entities.values():
-            if entity.platform != "esphome":
-                continue
-            if entity.original_name in _GATEWAY_SIGNATURE_ENTITY_NAMES:
-                entry_signature_names.setdefault(entity.config_entry_id, set()).add(
-                    entity.original_name
-                )
+        for entity in er.async_entries_for_config_entry(ent_reg, self._gateway_entry_id):
+            if entity.original_name == original_name:
+                return entity.entity_id
+        return None
 
-        gateways: dict[str, dict] = {}
+    def _find_esphome_gateways(self) -> dict[str, dict[str, Any]]:
+        """ESPHome config entries that look like an Ebara Hydrostation gateway.
+
+        Matched by this component's own signature entities rather than the
+        device name, which is fully user-customizable.
+        """
+        ent_reg = er.async_get(self.hass)
+        gateways: dict[str, dict[str, Any]] = {}
         for entry in self.hass.config_entries.async_entries("esphome"):
-            if not _GATEWAY_SIGNATURE_ENTITY_NAMES.issubset(
-                entry_signature_names.get(entry.entry_id, set())
-            ):
+            names = {
+                e.original_name for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+            }
+            if not _GATEWAY_SIGNATURE_ENTITY_NAMES.issubset(names):
                 continue
             host = entry.data.get("host", "")
-            port = entry.data.get("port", 6053)
-            noise_psk = entry.data.get("noise_psk")
             if not host:
                 continue
-            label = (
-                entry.data.get("device_name")
-                or entry.data.get("name")
-                or entry.title
-                or host
-            )
+            port = entry.data.get("port", 6053)
             gateways[f"{host}:{port}"] = {
-                "label": label,
-                "noise_psk": noise_psk,
+                "label": entry.data.get("device_name") or entry.title or host,
+                "noise_psk": entry.data.get("noise_psk"),
                 "entry_id": entry.entry_id,
                 "device_name": entry.data.get("device_name"),
             }
         return gateways
 
-    async def _read_discovered_hydros(self) -> dict[str, str]:
-        """Read discovered Hydrostations from HA state machine (no new API connection)."""
-        from homeassistant.helpers import entity_registry as er
-
+    def _read_discovered_hydros(self) -> dict[str, str]:
+        """Pumps seen by the gateway, from the HA state machine."""
         result: dict[str, str] = {}
 
-        # Find the "Discovered Hydrostations" and "Target MAC" entities from
-        # our gateway entry.
-        ent_reg = er.async_get(self.hass)
-        discovered_entity_id: str | None = None
-        target_mac_entity_id: str | None = None
-
-        for entity in ent_reg.entities.values():
-            if entity.config_entry_id != self._gateway_entry_id:
-                continue
-            entity_id_lower = (entity.entity_id or "").lower()
-            if discovered_entity_id is None and "discovered" in entity_id_lower:
-                discovered_entity_id = entity.entity_id
-            if target_mac_entity_id is None and "target_mac" in entity_id_lower:
-                target_mac_entity_id = entity.entity_id
-
-        if discovered_entity_id:
-            state = self.hass.states.get(discovered_entity_id)
-            if state and state.state and state.state not in ("unavailable", "unknown"):
-                try:
-                    devices = json.loads(state.state)
-                    for d in devices:
-                        mac = d.get("mac", "")
-                        name = d.get("name", mac)
-                        rssi = d.get("rssi", 0)
-                        if mac:
-                            result[mac] = f"{name} ({mac}, {rssi} dBm)"
-                except (json.JSONDecodeError, KeyError) as err:
-                    _LOGGER.error("JSON parse error reading discovered hydros: %s", err)
-        else:
+        discovered_entity_id = self._gateway_entity_id(ESP_ENTITY_DISCOVERED)
+        if discovered_entity_id is None:
             _LOGGER.warning(
-                "Could not find 'Discovered Hydrostations' entity for gateway entry %s",
+                "'%s' entity not found for gateway entry %s",
+                ESP_ENTITY_DISCOVERED,
                 self._gateway_entry_id,
             )
+        else:
+            state = self.hass.states.get(discovered_entity_id)
+            if state and state.state not in ("", "unavailable", "unknown"):
+                try:
+                    devices = json.loads(state.state)
+                except json.JSONDecodeError as err:
+                    _LOGGER.error("Invalid discovered-devices JSON from the gateway: %s", err)
+                    devices = []
+                for d in devices if isinstance(devices, list) else []:
+                    mac = str(d.get("mac", ""))
+                    name = str(d.get("name", mac))
+                    if not _MAC_RE.match(mac):
+                        continue
+                    # Only HYDRO pumps are supported; the gateway flags other
+                    # families (e.g. HYSTA) with "supported": false.
+                    if not d.get("supported", True):
+                        _LOGGER.warning("Ignoring %s (%s): pump family not supported", name, mac)
+                        continue
+                    result[mac] = f"{name} ({mac}, {d.get('rssi', 0)} dBm)"
+                    self._hydro_names[mac] = name
 
-        # Fallback: a gateway that's already bonded to a pump stops scanning
-        # entirely (see the ESP component's start_scan_()), so a fresh config
-        # flow attempt would otherwise never find anything and association
-        # would be impossible. Offer the currently configured Target MAC too,
-        # so re-associating an already-paired gateway stays possible.
+        # A gateway already paired with a pump does not scan: offer its
+        # current target MAC as well, so re-associating it stays possible.
+        target_mac_entity_id = self._gateway_entity_id(ESP_ENTITY_TARGET_MAC)
         if target_mac_entity_id:
             state = self.hass.states.get(target_mac_entity_id)
-            if state and state.state and _MAC_RE.match(state.state):
+            if state and _MAC_RE.match(state.state) and state.state not in result:
                 mac = state.state
-                if mac not in result:
-                    result[mac] = f"Hydrostation ({mac})"
+                result[mac] = f"Hydrostation ({mac})"
+                self._hydro_names.setdefault(mac, "Hydrostation")
 
         return result
 
     async def _write_target_mac(self, mac: str) -> None:
-        """Write target MAC to ESP32 via HA text service (reuses existing connection)."""
-        from homeassistant.helpers import entity_registry as er
+        """Write the target MAC to the gateway via its native text entity.
 
-        ent_reg = er.async_get(self.hass)
-        target_entity_id: str | None = None
-
-        for entity in ent_reg.entities.values():
-            if (
-                entity.config_entry_id == self._gateway_entry_id
-                and "target_mac" in (entity.entity_id or "").lower()
-            ):
-                target_entity_id = entity.entity_id
-                break
-
-        if not target_entity_id:
+        Not fatal: the coordinator also sends it at every (re)connection.
+        """
+        target_entity_id = self._gateway_entity_id(ESP_ENTITY_TARGET_MAC)
+        if target_entity_id is None:
             _LOGGER.warning("Target MAC entity not found for gateway %s", self._gateway_entry_id)
             return
-
-        await self.hass.services.async_call(
-            "text",
-            "set_value",
-            {"entity_id": target_entity_id, "value": mac},
-            blocking=True,
-        )
+        try:
+            await self.hass.services.async_call(
+                "text",
+                "set_value",
+                {"entity_id": target_entity_id, "value": mac},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 — retried by the coordinator
+            _LOGGER.warning("Could not write target MAC to the gateway: %s", err)
+            return
         _LOGGER.info("Wrote target MAC %s to %s", mac, target_entity_id)

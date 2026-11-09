@@ -11,7 +11,9 @@ This integration doesn't talk to the pump directly. It talks to a companion
 ESP32 gateway running a custom [ESPHome](https://esphome.io) component that
 does the actual Bluetooth work — see
 **[ebara-hydrostation-esphome](https://github.com/Danny89530/esphome-ebara-hydrostation)**.
-You need that flashed and running before this integration is useful. Think
+You need that flashed and running before this integration is useful, and
+the two must be on matching major versions (integration 2.x ↔ gateway
+component 2.x). Think
 of it as: ESP32 + BLE = gateway, Home Assistant + this integration = the
 nice dashboard on top.
 
@@ -19,21 +21,28 @@ nice dashboard on top.
 
 Once it's set up, you get a device in Home Assistant with:
 
-- **Sensors**: actual/target/start/delta pressure, motor current, motor
-  frequency, working hours, module temperature, DC bus voltage, estimated
-  water level (derived from motor current), firmware/hardware version,
-  serial number, a decoded error-word (e.g. "Over-temperature",
-  "Dry run", ...) and gateway connection status.
-- **Binary sensors**: motor running / motor enabled / motor error.
-- **Switches**: turn the motor on/off, and a "Gateway Enable" switch that
-  lets you pause the ESP32's Bluetooth connection to the pump entirely
-  without touching the ESP32 itself.
-- **Numbers**: writable target/start/delta pressure setpoints, and the
-  gateway's poll interval (how often it re-reads the pump over BLE).
+- **Sensors**: actual/target/start/restart-delta pressure (always in bar),
+  motor current, raw motor frequency, estimated pump load (the app's
+  "FREQUENCY SPEED" %, derived from motor current), working hours, module
+  temperature, DC bus voltage, pump status (Running, Standby, Assist mode,
+  External stop, Alarm, Pump off, Offline), pressure unit configured on the
+  pump, pump Bluetooth name, firmware/hardware version, serial number and
+  gateway status.
+- **Active alarms**: the alarm codes the pump reports (E01…E06, H01, H01+,
+  H02, C01) with the official app's texts in English or Italian; each
+  alarm's severity and suggested remedy are available as attributes.
+- **Binary sensors**: motor running, motor enabled, pump alarm, external
+  stop, and a diagnostic raw status bit not decoded by the app.
+- **Switches**: the pump's automatic control on/off (refused by the gateway
+  while an alarm is active, as in the app), and a "Gateway enable" switch
+  that pauses the ESP32's Bluetooth connection to the pump entirely.
+- **Numbers**: writable target pressure (2.0–5.5 bar) and restart delta
+  (0.5–2.0 bar), and the gateway's update interval for live values.
 
 Everything is grouped under one device named after your pump, with entity
-names that actually make sense, instead of the raw names ESPHome itself
-would expose.
+names translated into English or Italian, and the pump's firmware/hardware
+version and serial number shown on the device page. When the pump is
+unreachable its values are shown as unknown, never as stale readings.
 
 ## Why a separate integration instead of just using ESPHome's own device page
 
@@ -46,37 +55,43 @@ because I wanted:
 - A config flow that walks you through discovering nearby Hydrostation pumps
   over BLE and picking the right one, instead of you having to know its MAC
   address up front.
-- Room to add pump-specific logic in Python (like decoding the error
-  bitmask into readable text) without cramming it all into the ESP32
+- Room for pump-specific logic in Python (like translating the alarm codes
+  and attaching the remedies) without cramming it all into the ESP32
   firmware.
 
 Under the hood it keeps its own connection to the ESP32 over the native
 ESPHome API, and on setup it automatically disables the duplicate entities
 the native ESPHome integration would otherwise also create for the same
-device — the ESP32 stays visible for the few things this integration
+device — once, so if you deliberately re-enable one of them it stays
+enabled. The ESP32 stays visible for the few things this integration
 doesn't replicate (its Target MAC input, the "Discovered Hydrostations"
 list used during setup, and the reboot button), so you're never staring at
-two copies of the same sensor.
+two copies of the same sensor. Removing the integration re-enables them.
 
 ## Requirements
 
-- Home Assistant, recent enough to run config-flow integrations (nothing
-  exotic — anything from the last couple of years should be fine).
+- Home Assistant 2025.2 or newer (tested on 2026.11).
 - The [companion ESPHome gateway](https://github.com/Danny89530/esphome-ebara-hydrostation),
-  already flashed onto an ESP32 and connected to your WiFi, with its native
-  ESPHome integration already added to Home Assistant (or reachable on your
-  network — the config flow can also take a host/port manually).
-- An Ebara Hydrostation pump within Bluetooth range of that ESP32.
+  version 2.x, flashed onto an ESP32 and connected to your WiFi, **with its
+  device already added to Home Assistant's ESPHome integration** — the setup
+  wizard reads the list of discovered pumps through it.
+- An Ebara Hydrostation pump of the **HYDRO** family within Bluetooth range
+  of that ESP32. HYSTA pumps use a different protocol and are not supported
+  (the wizard does not list them).
 
 ## Installation
 
-### Via HACS (recommended)
+### Via the Marketplace / HACS (recommended)
 
-1. In HACS, go to **Integrations** → the three-dot menu → **Custom
-   repositories**.
-2. Add this repository's URL, category **Integration**.
-3. Find "Ebara Hydrostation" in HACS and install it.
-4. Restart Home Assistant.
+On Home Assistant 2026.11 and newer, HACS content lives in the built-in
+**Marketplace**; on older versions use HACS. Either way:
+
+1. Add this repository's URL as a custom repository, category
+   **Integration**.
+2. Find "Ebara Hydrostation" and install it.
+3. Restart Home Assistant.
+
+New releases are then offered as updates automatically.
 
 ### Manual install
 
@@ -89,23 +104,34 @@ restart Home Assistant.
 Everything is done through the UI, no YAML required:
 
 1. **Settings → Devices & Services → Add Integration → "Ebara Hydrostation"**.
-2. If you already have the ESPHome gateway added natively, it'll be
-   detected automatically — pick it from the list. Otherwise, enter its
-   host/port yourself.
+2. The gateway is detected from your ESPHome devices — pick it from the
+   list. If it isn't listed, you can enter its address, but it must still
+   be added to the ESPHome integration first.
 3. The gateway scans for nearby pumps and lists whatever it finds
-   (name, MAC address, signal strength). Pick yours.
+   (name, MAC address, signal strength). Pick yours. If the list is empty,
+   check the pump and submit again to retry.
 4. Done — the device and its entities show up right away.
 
-If you ever need to point it at a different pump, or the pump's MAC
-changes for some reason, just remove and re-add the integration; the target
-MAC is stored on the ESP32 itself, so it survives Home Assistant restarts
-either way.
+One gateway drives one pump: a gateway already in use is refused. To point
+it at a different pump, remove and re-add the integration; the target MAC is
+stored on the ESP32 itself, so it survives Home Assistant restarts either
+way.
+
+## Upgrading from 1.x
+
+The update keeps your existing entry, entity IDs and history: the obsolete
+entities (estimated water level, error word, status word, start-pressure
+setpoint) are removed automatically and the new ones are added. Update the
+**ESPHome gateway** too (see its changelog): until it runs component 2.x
+with the new entities in its YAML, Home Assistant shows a repair notice and
+the new entities stay unknown. Details in [CHANGELOG.md](CHANGELOG.md).
 
 ## A couple of things worth knowing
 
-- The poll interval is configurable (5–300 seconds) from the "Update
-  Interval" entity — lower means fresher data but more BLE traffic to the
-  pump; the default (15s) is a reasonable middle ground.
+- The update interval for live values is configurable (2–300 seconds) from
+  the "Update interval" entity and applies immediately; slow-changing values
+  (working hours, temperature, voltage) are read every 60 s regardless. The
+  default comes from the gateway YAML (10 s).
 - Pressure setpoints are exposed as writable slider entities, but I'd treat
   them with the same care you'd use in the official app — they change how
   your pump actually behaves.

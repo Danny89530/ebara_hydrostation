@@ -1,4 +1,5 @@
 {
+  "title": "Ebara Hydrostation",
   "config": {
     "step": {
       "user": {
@@ -14,7 +15,7 @@
       },
       "manual_gateway": {
         "title": "Indirizzo Gateway",
-        "description": "Inserisci manualmente l'indirizzo IP del gateway ESP32.",
+        "description": "Inserisci l'indirizzo IP del gateway ESP32. Deve essere già configurato nell'integrazione ESPHome.",
         "data": {
           "host": "Host / Indirizzo IP",
           "port": "Porta (default 6053)"
@@ -22,47 +23,136 @@
       },
       "select_hydro": {
         "title": "Seleziona Hydrostation",
-        "description": "Scegli l'Hydrostation da aggiungere:",
+        "description": "Scegli l'Hydrostation da aggiungere. Se l'elenco è vuoto, verifica la pompa e invia di nuovo per riprovare.",
         "data": {
           "hydro_mac": "Hydrostation"
         }
       }
     },
     "error": {
-      "cannot_connect": "Impossibile connettersi al dispositivo. Verifica che sia acceso e nel raggio d'azione.",
-      "invalid_address": "Indirizzo MAC Bluetooth non valido. Usa il formato AA:BB:CC:DD:EE:FF.",
-      "unknown": "Errore imprevisto."
+      "no_devices_found": "Il gateway non ha trovato nessuna Hydrostation supportata. Verifica che la pompa sia accesa e nel raggio Bluetooth del gateway, poi invia di nuovo.",
+      "esphome_entry_missing": "Nessun dispositivo ESPHome con questo indirizzo. Aggiungi prima il gateway all'integrazione ESPHome."
     },
     "abort": {
-      "already_configured": "Questo dispositivo è già configurato.",
-      "no_devices_found": "Nessuna Hydrostation trovata via Bluetooth."
+      "already_configured": "Questa Hydrostation è già configurata.",
+      "gateway_already_configured": "Questo gateway è già usato da un'altra Hydrostation (un gateway gestisce una sola pompa)."
     }
   },
   "entity": {
     "sensor": {
-      "act_pressure": { "name": "Pressione attuale" },
-      "target_pressure": { "name": "Pressione di lavoro" },
-      "start_pressure": { "name": "Pressione di avvio" },
-      "delta_pressure": { "name": "Delta pressione" },
-      "current": { "name": "Corrente motore" },
-      "freq_motor": { "name": "Frequenza motore" },
-      "water_percent": { "name": "Livello acqua" },
-      "work_hours": { "name": "Ore di lavoro" },
-      "error_codes": { "name": "Errori attivi" },
-      "fw_version": { "name": "Versione firmware" },
-      "hw_version": { "name": "Versione hardware" }
+      "pressure_actual": {
+        "name": "Pressione attuale"
+      },
+      "pressure_target": {
+        "name": "Pressione impostata"
+      },
+      "pressure_start": {
+        "name": "Pressione di ripartenza"
+      },
+      "pressure_delta": {
+        "name": "Delta di ripartenza"
+      },
+      "motor_frequency": {
+        "name": "Frequenza motore (grezza)"
+      },
+      "motor_current": {
+        "name": "Corrente motore"
+      },
+      "temperature": {
+        "name": "Temperatura modulo"
+      },
+      "voltage": {
+        "name": "Tensione bus DC"
+      },
+      "working_hours": {
+        "name": "Ore di lavoro"
+      },
+      "pump_load": {
+        "name": "Carico pompa stimato"
+      },
+      "pump_status": {
+        "name": "Stato pompa",
+        "state": {
+          "external_stop": "Stop esterno",
+          "running": "In marcia",
+          "assist": "Assist",
+          "standby": "Standby",
+          "alarm": "Allarme",
+          "off": "Spenta",
+          "offline": "Non raggiungibile"
+        }
+      },
+      "error_text": {
+        "name": "Allarmi attivi"
+      },
+      "fw_version": {
+        "name": "Versione firmware"
+      },
+      "hw_version": {
+        "name": "Versione hardware"
+      },
+      "pressure_unit": {
+        "name": "Unità di pressione"
+      },
+      "device_name": {
+        "name": "Nome dispositivo pompa"
+      },
+      "gw_status": {
+        "name": "Stato gateway"
+      },
+      "serial_number": {
+        "name": "Numero di serie"
+      }
     },
     "binary_sensor": {
-      "motor_run": { "name": "Motore in marcia" },
-      "motor_enabled": { "name": "Motore abilitato" },
-      "motor_error": { "name": "Errore motore" }
+      "motor_running": {
+        "name": "Motore in marcia"
+      },
+      "motor_enabled": {
+        "name": "Motore abilitato"
+      },
+      "motor_error": {
+        "name": "Allarme pompa"
+      },
+      "external_stop": {
+        "name": "Stop esterno"
+      },
+      "status_bit10": {
+        "name": "Bit di stato 10 (non documentato)"
+      }
     },
     "switch": {
-      "motor": { "name": "Motore" }
+      "motor": {
+        "name": "Motore"
+      },
+      "gateway_enable": {
+        "name": "Abilita gateway"
+      }
     },
     "number": {
-      "target_pressure": { "name": "Pressione di lavoro" },
-      "delta_pressure": { "name": "Delta pressione" }
+      "set_target_pressure": {
+        "name": "Imposta pressione"
+      },
+      "set_delta_pressure": {
+        "name": "Imposta delta di ripartenza"
+      },
+      "poll_interval": {
+        "name": "Intervallo di aggiornamento"
+      }
+    }
+  },
+  "exceptions": {
+    "gateway_not_connected": {
+      "message": "Il gateway ESP32 non è connesso."
+    },
+    "gateway_entity_missing": {
+      "message": "Il gateway ESP32 non espone l'entità '{entity}': aggiorna il firmware del gateway."
+    }
+  },
+  "issues": {
+    "gateway_outdated": {
+      "title": "Il gateway Ebara va aggiornato",
+      "description": "Il gateway ESP32 {gateway} non espone queste entità: {missing}. Aggiorna il componente ESPHome (ricompila il gateway) e aggiungi le nuove entità al suo YAML come indicato nel changelog. Fino ad allora le entità corrispondenti dell'Hydrostation restano sconosciute."
     }
   }
 }
